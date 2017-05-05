@@ -5,7 +5,6 @@
 //
 // HelloP.cpp : Defines the entry point for the application.
 //
-
 //#undef UNICODE
 
 #define WINVER 0x0500						// Windows 2000 or later
@@ -34,7 +33,7 @@ INT_PTR CALLBACK	About(HWND, UINT, WPARAM, LPARAM);
 
 //DWORD playWAVEfile(HWND hWndNotify, LPSTR lpszWAVEFileName);
 DWORD playWAVEfile(HWND hWndNotify, LPCTSTR lpszWAVEFileName);
-DWORD recordWAVEfFile(DWORD dwMilliSeconds);
+DWORD recordWAVEfile(DWORD dwMilliSeconds);
 void DTMFdetect();
 unsigned char detectTones(unsigned long start, unsigned short length);
 
@@ -338,8 +337,8 @@ void Error(char *errmsg)
 	 printf("\n");
 }
 
-//unsigned char waveData[25000];   // 8 bit PCM
-signed short waveData[25000]; // 16 bit PCM
+unsigned char waveData[25000];   // 8 bit PCM, 0 .. 255
+//signed short waveData[25000]; // 16 bit PCM, -32768 .. 32767
 
 // DTMFDetect--Detects DTMF symbols in a waveform-audio file.
 
@@ -371,12 +370,23 @@ void DTMFdetect()
 		unsigned char tones; // bit map of tones
 		//  7        6       5      4       3      2      1      0 
 		// 1209 Hz 1336 Hz 1477 Hz 1633 Hz 697 Hz 770 Hz 852 Hz 941 Hz
+		unsigned char m, n, DTMF[16], i;
+
+/*  DTMF Matrix
 		
-		// Get the filename from the edit control. 
+			1209 Hz 	1336 Hz 	1477 Hz 	1633 Hz
+     697 Hz 	1 	      2 	      3 	      A
+     770 Hz 	4 	      5 	      6 	      B
+     852 Hz 	7 	      8 	      9 	      C
+     941 Hz 	* 	      0 	      # 	      D
+*/
+		const unsigned char DTMFmatrix[4][4] =
+		{'1', '2', '3', 'A', '4', '5', '6', 'B', '7', '8', '9', 'C', '*', '0', '#', 'D'};
          
     // Open the file for reading with buffered I/O 
     // by using the default internal buffer 
-    if(!(hmmio = mmioOpen((LPWSTR)L"TONES.WAV" /*szFileName*/, NULL, 
+    //if(!(hmmio = mmioOpen((LPWSTR)L"TONES.WAV" /*szFileName*/, NULL, 
+	if(!(hmmio = mmioOpen((LPWSTR)L"DTMF.WAV" /*szFileName*/, NULL, 
         MMIO_READ | MMIO_ALLOCBUF))) 
     { 
         Error("Failed to open file."); 
@@ -454,47 +464,98 @@ void DTMFdetect()
     mmioClose(hmmio, 0); 
 
 // locate energy ( @ 11025 samples per sec, 50 ms = 551.25 samples)
-#define PCM16
+#define PCM8
+//#define PCM16
 
 	if (fopen_s(&TONES,"TONES.OUT", "w") !=0) printf("Output file err\n");
 
-	k = 0;
+//	fprintf_s(TONES, "Key: 1209    1336    1477    1633     697     770      852       941\n");
+//	fprintf_s(TONES, "       0       1       2       3       4       5        6          7\n");
+
+
+	k = 0; i = 0;
     for (; k < dwDataSize-10; )
 	{
        for (; k < dwDataSize-10; k++) 
 	   {
 			dat = waveData[k];
 #ifdef PCM8
-			if (dat > 127)
+
+			if (newFormat.nBitsPerSample == 8)
 				dat -= 128;
-			else
-			   dat = 128-dat;
+
 #endif
 
 #ifdef PCM16
-			if (dat < 0)
-			   dat = -dat;
+
+
 #endif
-            if (dat != 0)
-				 break;
+// trim the noisy lead-in 
+            if ((dat > 5) || (dat < -5))
+			{
+				break;
+/*
+// locate phase == zero before breaking out
+//  if dat is positive, wait till it turns negative
+				for (; k < dwDataSize - 10; k++ )
+				{
+					dat = waveData[k];
+					if (newFormat.nBitsPerSample == 8)
+     				   dat -= 128;
+					if (dat < 0)
+						break;
+				}
+// if dat is negative, wait till it turns positive
+				for (; k < dwDataSize - 10; k++ )
+				{
+					dat = waveData[k];
+					if (newFormat.nBitsPerSample == 8)
+     				   dat -= 128;
+					if (dat >= 0)
+						break;
+				}
+                break; 
+*/
+			}
        }
        
 	   if (k > dwDataSize - 560)
-		   return;
+		   break;
 
-#ifdef ACQUISITION
-	   // lowest freq = 697 Hz; waveform repeats after 16 samples ( = 11025/697) 
-	   // for sliding window acquisition,  start @ k .. (k+16)
-	   for (j = 0; j < 16; j++)
+       tones = detectTones(k, 500);
+	   m = tones >> 4;
+	   n = tones & 0xF;
+
+	   switch (m)
 	   {
-           tones = detectTones(k+j, 550);
-	   }
-#else
-       tones = detectTones(k, 550);
-#endif
+		   case 1: m = 3; break;
+		   case 2: m = 2; break;
+		   case 4: m = 1; break;
+		   case 8: m = 0; 
+	   };
+       switch (n)
+	   {
+		   case 1: n = 3; break;
+		   case 2: n = 2; break;
+		   case 4: n = 1; break;
+		   case 8: n = 0; 
+	   };
 
-	   k += 600; // 50 samples minimum gap between tones, assumed
+	   DTMF[i] = DTMFmatrix[n][m];
+
+	   fprintf_s (TONES, " %c ", DTMF[i]);
+	   i++;
+//	   fprintf_s(TONES, "\n");
+	   k += 1100; // 50 ms gap between tones
 	}
+    fprintf_s(TONES, "\n");
+	fprintf_s(TONES, "Message:\n");
+	fprintf_s(TONES, "Account number = %c%c%c%c\n", DTMF[0],DTMF[1],DTMF[2],DTMF[3]);
+    fprintf_s(TONES, "Message type = %c%c\n", DTMF[4], DTMF[5]);
+	fprintf_s(TONES, "Even Qualifier = %c%c%c%c\n", DTMF[6],DTMF[7],DTMF[8],DTMF[9]);
+    fprintf_s(TONES, "Partition Number = %c%c\n", DTMF[10], DTMF[11]);
+    fprintf_s(TONES, "Zone Number = %c%c%c\n", DTMF[12],DTMF[13],DTMF[14]);
+    fprintf_s(TONES, "Checksum = %c\n", DTMF[15]);
 
     fclose(TONES);
 
@@ -508,37 +569,53 @@ unsigned char detectTones(unsigned long start, unsigned short length)
 {
 	unsigned char tonesBitMap = 0;
 
-    unsigned char n;
+    unsigned char n, phase;
 	unsigned short row;
-	double acc[8];
+	double acc[8], a;
 	int wd;
 	double sin, mul;
 	int i;
 
 
-	fprintf_s(TONES, "start = %d \n", start);
+//	fprintf_s(TONES, "start = %d ", start);
 
 	for (n = 0; n < 8; n++)
 	{
 		tonesBitMap <<= 1;
         acc[n] = 0.0;
-        for (row = 0; row < length; row++)
-		{
-			wd = waveData[start+row];
-			sin = sinft50[row+2][n];
-			mul = wd*sin;
-			acc[n] += mul;
-		}
+       // ACQUISITION
+	   // lowest freq = 697 Hz; waveform repeats after 16 samples ( = 11025/697) 
+	   // for sliding window acquisition,  start @ phase = 0 .. 16
 
-		//fprintf_s(TONES, "acc[%d]=%f\n", n, acc[n]);
-		i = (int) (acc[n]/1000000);
-		fprintf_s(TONES, "acc[%d]=%d\n", n, i );
+		for (phase = 0; phase < 16; phase++)
+		{
+			a = 0.0;
+            for (row = 0; row < length; row++)
+		    {
+			    wd = waveData[start+phase+row];
+#ifdef PCM8
+				wd -= 128;
+#endif
+			    sin = sinft50[row+2][n];
+			    mul = wd*sin;
+			    a += mul;
+//fprintf_s(TONES, "%d, wd = %d, sin = %f, mul = %f, a=%f\n", row, wd, sin, mul, n, a);
+		    }
+            if (a < 0) a = -a;
+			acc[n] += a;
+	    }
+//		fprintf_s(TONES, "acc[%d]=%f\n", n, acc[n]);
+
+		i = (int) (acc[n]/40000);
+//		fprintf_s(TONES, "acc[%d]=%3d , ", n, i );
 
 		if (i > 0)
 			tonesBitMap++;
-	}
 
-	fprintf_s(TONES, "tones BitMap = %x\n\n", tonesBitMap);
+	}
+//	fprintf_s(TONES, "\n");
+
+//    fprintf_s(TONES, "tones BitMap = %x\n\n", tonesBitMap);
 
 	return tonesBitMap;
 
